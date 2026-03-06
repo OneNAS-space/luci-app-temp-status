@@ -61,7 +61,9 @@ jobs:
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
-    matrix:
+    strategy:
+      fail-fast: false
+      matrix:
         include:
           - version: openwrt-24.10
             target: x86_64
