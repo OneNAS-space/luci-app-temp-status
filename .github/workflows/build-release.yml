@@ -212,5 +212,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add 24.10/luci/ 25.12/luci
-          git commit -m "Update $CURRENT_PKG to - v${{ needs.check.outputs.main_full_version }}" || echo "No changes"
+          git commit -m "Update $CURRENT_PKG to v${{ needs.check.outputs.main_full_version }}" || echo "No changes"
           git push
