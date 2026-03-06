@@ -7,7 +7,7 @@ on:
     branches:
       - master
     paths:
-      - 'Makefile'
+      - '**/Makefile'
       - '!**/.github/**'
   workflow_dispatch:
 
