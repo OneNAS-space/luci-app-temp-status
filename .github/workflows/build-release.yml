@@ -30,9 +30,9 @@ jobs:
         run: |
           PKG_VERSION=$(grep -E '^PKG_VERSION *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
           PKG_RELEASE=$(grep -E '^PKG_RELEASE *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
-          COMBINED_VERSION="${PKG_VERSION}-r${PKG_RELEASE}"
+          COMBINED_VERSION="v${PKG_VERSION}-r${PKG_RELEASE}"
           
-          echo "tag_name=v${COMBINED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${COMBINED_VERSION}" >> "$GITHUB_OUTPUT"
           echo "main_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
           echo "main_full_version=$COMBINED_VERSION" >> "$GITHUB_OUTPUT"
                     
@@ -71,9 +71,6 @@ jobs:
           - version: openwrt-25.12
             target: x86_64
             suffix: noarch
-
-    outputs:
-      version: ${{ steps.patch_version.outputs.version }}
 
     steps:
       - name: 🧾 Checkout repo
@@ -155,7 +152,7 @@ jobs:
         run: |
           PKG_VERSION=$(grep -E '^PKG_VERSION *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
           PKG_RELEASE=$(grep -E '^PKG_RELEASE *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
-          COMBINED_VERSION="${PKG_VERSION}-${PKG_RELEASE}"
+          COMBINED_VERSION="v${PKG_VERSION}-r${PKG_RELEASE}"
           echo "📦 Version: $COMBINED_VERSION"
           echo "version=$COMBINED_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -167,8 +164,8 @@ jobs:
       - name: 🗃️ Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Build-v${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Build-${{ steps.version.outputs.version }}
           files: |
             ./release-assets/**/*.ipk
             ./release-assets/**/*.apk
@@ -211,6 +208,10 @@ jobs:
           cd custom-packages
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add 24.10/luci/ 25.12/luci
-          git commit -m "Update $CURRENT_PKG to v${{ needs.check.outputs.main_full_version }}" || echo "No changes"
-          git push
+          git add 24.10/luci/ 25.12/luci 2>/dev/null || true
+          git commit -m "Update $CURRENT_PKG to ${{ needs.check.outputs.main_full_version }}" || exit 0
+          for i in {1..5}; do
+            git pull --rebase origin main && \
+            git push origin main && break || \
+            (echo "Conflict detected, retrying in 5s..." && sleep 5)
+          done
