@@ -12,7 +12,6 @@ on:
     paths:
       - 'local-patches/**'
 
-# 同一时间只跑一个同步任务,避免两次运行互相覆盖
 concurrency:
   group: auto-sync-original
   cancel-in-progress: false
@@ -25,9 +24,6 @@ env:
   PATCH_DIR: local-patches                           # 自定义补丁目录
   # main 分支上由我们自己维护、同步时不被上游覆盖的路径(空格分隔)
   PROTECTED_PATHS: ".github local-patches README.md SECURITY.md LICENSE screenshots"
-  # 打完补丁后强制写入 Makefile 的 PKG_RELEASE,保证高于已发布的 vX-rN(留空则不改)。
-  # 不用补丁做这件事:上游升级 PKG_VERSION 时,相邻行会让补丁上下文失配。
-  PKG_RELEASE_OVERRIDE: "4"
 
 jobs:
   sync-and-sanitize:
@@ -153,17 +149,37 @@ jobs:
             fi
           done
 
-      - name: Override PKG_RELEASE
+      - name: Bump PKG_RELEASE
         run: |
-          if [ -z "$PKG_RELEASE_OVERRIDE" ]; then
-            echo "ℹ️ PKG_RELEASE_OVERRIDE is empty, keeping upstream value."
-            exit 0
-          fi
           if ! grep -q '^PKG_RELEASE:=' Makefile; then
             echo "❌ PKG_RELEASE line not found in Makefile."
             exit 1
           fi
-          sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${PKG_RELEASE_OVERRIDE}/" Makefile
+
+          PREV_REL=$(git show HEAD:Makefile 2>/dev/null | sed -n 's/^PKG_RELEASE:=\([0-9]*\).*/\1/p' | head -n1)
+          PREV_REL=${PREV_REL:-0}
+
+          PREV_VER=$(git show HEAD:Makefile 2>/dev/null | sed -n 's/^PKG_VERSION:=\(.*\)/\1/p' | head -n1 | tr -d '[:space:]')
+          VER=$(sed -n 's/^PKG_VERSION:=\(.*\)/\1/p' Makefile | head -n1 | tr -d '[:space:]')
+          if [ -n "$PREV_VER" ] && [ "$PREV_VER" != "$VER" ]; then
+            echo "🆕 PKG_VERSION changed ($PREV_VER -> $VER): following upstream PKG_RELEASE."
+            grep -E '^PKG_(VERSION|RELEASE):=' Makefile
+            exit 0
+          fi
+
+          sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${PREV_REL}/" Makefile
+          git add -A
+          if git diff --cached --quiet HEAD -- . ':!.upstream_meta'; then
+            echo "ℹ️ Shipped files unchanged, keeping PKG_RELEASE:=${PREV_REL}"
+            exit 0
+          fi
+
+          TAG_REL=$(git tag -l "v${VER}-r*" | sed -n 's/.*-r\([0-9][0-9]*\)$/\1/p' | sort -n | tail -n1)
+          BASE=$(( PREV_REL > ${TAG_REL:-0} ? PREV_REL : ${TAG_REL:-0} ))
+          NEXT=$(( BASE + 1 ))
+
+          sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${NEXT}/" Makefile
+          echo "🔢 PKG_RELEASE: ${PREV_REL} -> ${NEXT} (version ${VER}, highest tag r${TAG_REL:-none})"
           grep -E '^PKG_(VERSION|RELEASE):=' Makefile
 
       - name: Commit and push to main
