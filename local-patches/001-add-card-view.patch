@@ -1,0 +1,449 @@
+From acdee825ca0c2e9ee02f8849bd91cbd366c15a51 Mon Sep 17 00:00:00 2001
+From: Jackie Han <jackie.han@gmail.com>
+Date: Wed, 4 Nov 2026 06:19:23 +0800
+Subject: [PATCH] luci-app-temp-status: add card view to the temperature
+ status
+
+Add a third view type, "card", next to the existing table and list
+views. Cards reuse the theme's .ifacebox classes so they look like the
+Port status cards on the overview page, with a thermometer icon, a gauge
+strip, and the limit temperature in the bottom row. The sensor name is
+shown without the _thermal suffix; the full name and the trip points are
+available as tooltips.
+
+Switch view now cycles table -> list -> card, and card is the default
+view. The button bar spacing is tightened and aligned with the section
+title.
+---
+ .../view/status/include/27_temperature.js     | 359 +++++++++++++++++-
+ 1 file changed, 352 insertions(+), 7 deletions(-)
+
+diff --git a/htdocs/luci-static/resources/view/status/include/27_temperature.js b/htdocs/luci-static/resources/view/status/include/27_temperature.js
+index 56bb2f8..e85642e 100644
+--- a/htdocs/luci-static/resources/view/status/include/27_temperature.js
++++ b/htdocs/luci-static/resources/view/status/include/27_temperature.js
+@@ -16,6 +16,28 @@ document.head.append(E('style', {'type': 'text/css'},
+ 	--app-temp-status-hot-color: #8d7000;
+ 	--app-temp-status-overheat-color: #a93734;
+ }
++:root {
++	/* light: same colors as the zone strips of the Port status cards (Argon variables, with fallbacks) */
++	--app-temp-status-ok: rgb(var(--zone-positive-rgb, 144, 240, 144));
++	--app-temp-status-warn: rgb(240, 208, 144);
++	--app-temp-status-crit: rgb(var(--zone-negative-rgb, 240, 144, 144));
++	--app-temp-status-crit-text: var(--zone-label-color, #333);
++}
++/* dark: Argon's zone colors are too dim for a thermometer / gauge, use brighter tones */
++:root[data-argon-mode="dark"] {
++	--app-temp-status-ok: rgb(88, 168, 88);
++	--app-temp-status-warn: rgb(235, 184, 64);
++	--app-temp-status-crit: rgb(232, 106, 106);
++	--app-temp-status-crit-text: #fff;
++}
++@media (prefers-color-scheme: dark) {
++	:root:not([data-argon-mode="light"]) {
++		--app-temp-status-ok: rgb(88, 168, 88);
++		--app-temp-status-warn: rgb(235, 184, 64);
++		--app-temp-status-crit: rgb(232, 106, 106);
++		--app-temp-status-crit-text: #fff;
++	}
++}
+ .temp-status-hot {
+ 	background-color: var(--app-temp-status-hot-color) !important;
+ 	color: var(--app-temp-status-font-color) !important;
+@@ -79,21 +101,169 @@ document.head.append(E('style', {'type': 'text/css'},
+ 	font-size: 95%;
+ }
+ 
++/* card view: same structure as the Port status cards (.ifacebox) */
++/* every row is spread over the full width, a short last row ends up centered */
++.temp-status-card-area {
++	display: flex;
++	flex-wrap: wrap;
++	justify-content: space-evenly;
++	gap: var(--field-gap, .75rem) .5rem;
++	padding: .25rem var(--section-inset, 0) var(--field-gap, .5rem);
++}
++
++.temp-status-card.ifacebox {
++	display: flex;
++	flex: 0 0 6.5rem;
++	flex-direction: column;
++	width: 6.5rem;
++	min-width: 0;
++	max-width: 100%;
++	margin: 0;
++	overflow: hidden;
++	text-align: center;
++}
++
++.temp-status-card .temp-status-card-head {
++	position: relative;
++	padding: .25em 1.3em .25em 1em;
++	font-size: .8125rem;
++	line-height: 1.25;
++}
++/* one line only, so the values of cards in the same row stay aligned; full name is in the tooltip */
++.temp-status-card .temp-status-card-name {
++	display: block;
++	font-weight: bold;
++	overflow: hidden;
++	white-space: nowrap;
++	text-overflow: ellipsis;
++}
++/* same pointer as LuCI's own tooltip targets */
++.temp-status-card [data-tooltip] {
++	cursor: help;
++}
++
++.temp-status-card .temp-status-hide-item {
++	position: absolute;
++	top: 50%;
++	right: .25em;
++	transform: translateY(-50%);
++	margin: 0 !important;
++	padding: 0 .3em;
++	border: 0;
++	background: none;
++	font-size: 1.1em;
++	font-weight: normal;
++	line-height: 1;
++	opacity: .45;
++}
++.temp-status-card .temp-status-hide-item:hover {
++	opacity: 1;
++	color: var(--app-temp-status-crit);
++}
++
++.temp-status-card .temp-status-card-main {
++	flex: 1 1 auto;
++	display: flex;
++	flex-direction: column;
++	align-items: center;
++	justify-content: center;
++	gap: .375rem;
++	padding: .75rem .5rem;
++	line-height: 1;
++}
++.temp-status-card-value {
++	font-size: 13px;
++	font-variant-numeric: tabular-nums;
++	white-space: nowrap;
++}
++
++/* thermometer icon, plays the role of the port icon in the Port status cards */
++.temp-status-icon {
++	display: block;
++	width: 14px;
++	height: 28px;
++}
++.temp-status-icon .tube {
++	fill: none;
++	stroke: currentColor;
++	stroke-width: 1.5;
++	opacity: .5;
++}
++.temp-status-icon .mercury {
++	fill: var(--temp-color, var(--app-temp-status-ok));
++}
++.temp-status-card-nodata .temp-status-icon .mercury {
++	fill: currentColor;
++	opacity: .25;
++}
++
++/* 3px gauge strip, like the zone strip between the two halves of a port card */
++.temp-status-gauge {
++	flex: none;
++	height: 3px;
++	background: var(--iface-head-bg, rgba(128, 128, 128, .25));
++}
++.temp-status-gauge::before {
++	content: '';
++	display: block;
++	height: 100%;
++	width: var(--temp-ratio, 0%);
++	background: var(--temp-color, var(--app-temp-status-ok));
++	transition: width .6s ease;
++}
++
++.temp-status-card .temp-status-card-info {
++	display: flex;
++	flex-wrap: nowrap;
++	align-items: center;
++	justify-content: space-between;
++	gap: .25rem;
++	padding: .5rem;
++	font-size: .75rem;
++	line-height: 1.5;
++	white-space: nowrap;
++}
++.temp-status-info-label {
++	font-size: .6875rem;
++	text-transform: uppercase;
++	opacity: .7;
++}
++.temp-status-info-value {
++	margin-inline-start: auto;
++	font-weight: 500;
++	font-variant-numeric: tabular-nums;
++}
++
++.temp-status-card-hot { --temp-color: var(--app-temp-status-warn); }
++.temp-status-card-overheat { --temp-color: var(--app-temp-status-crit); }
++.temp-status-card-hot .temp-status-card-value,
++.temp-status-card-overheat .temp-status-card-value {
++	color: var(--temp-color);
++	color: color-mix(in srgb, var(--temp-color) 55%, var(--iface-head-text, #000));
++}
++.temp-status-card-overheat .temp-status-card-head {
++	background: var(--app-temp-status-crit);
++	color: var(--app-temp-status-crit-text);
++}
++.temp-status-card-overheat .temp-status-hide-item:hover { color: inherit; }
++
+ #temp-status-buttons-wrapper {
+-	margin-bottom: 1em;
++	/* the label text, not the faint button box, lines up with the section title: pull the box out by its border + padding */
++	margin: 0 0 0 -11px;
++	padding: .25rem var(--section-inset, 0) 0;
+ }
+ .temp-status-button {
+ 	display: inline-block;
+ 	cursor: pointer;
+ 	margin: 2px 4px 2px 0 !important;
+-	padding: 3px 5px;
++	padding: 3px 10px;
+ 	border: 1px solid;
+ 	border-color: transparent;
+ 	-webkit-border-radius: 4px;
+ 	-moz-border-radius: 4px;
+ 	border-radius: 4px;
+-	opacity: 0.7;
+-	background-color: rgba(100 100 100 / 0.2);
++	opacity: 1;
++	background-color: rgba(100 100 100 / 0.05);
+ }
+ .temp-status-button:hover {
+ 	opacity: 0.9;
+@@ -122,6 +292,29 @@ document.head.append(E('style', {'type': 'text/css'},
+ }
+ `));
+ 
++/*
++ * LuCI's tooltip always starts with a hard-coded "▲ " (or "▼ " when it opens upwards).
++ * ui.js fires "tooltip-open" right after filling it in, so the marker is removed here,
++ * for the tooltips of the cards only (data-tooltip-style="temp-status").
++ */
++if(!window.tempStatusTooltipPatched) {
++	window.tempStatusTooltipPatched = true;
++	document.addEventListener('tooltip-open', (ev) => {
++		let target = ev.detail && ev.detail.target;
++		if(!target || target.getAttribute('data-tooltip-style') !== 'temp-status') return;
++		let node = ev.target && ev.target.firstChild;
++		if(node && node.nodeType === 3) {
++			node.data = node.data.replace(/^[▲▼] /, '');
++		}
++		/* LuCI places a tooltip at the left edge of its target: line the bottom row's tooltip up with the name's */
++		let card = target.closest('.temp-status-card');
++		let name = card && card.querySelector('.temp-status-card-name');
++		if(name && name !== target) {
++			ev.target.style.left = (name.getBoundingClientRect().left + window.pageXOffset) + 'px';
++		}
++	});
++}
++
+ return baseclass.extend({
+ 	title          : _('Temperature'),
+ 
+@@ -145,9 +338,11 @@ return baseclass.extend({
+ 
+ 	tempArea       : E('div', { 'class': 'temp-status-temp-area' }),
+ 
++	tempCard       : E('div', { 'class': 'temp-status-card-area' }),
++
+ 	tempView       : E('div', {}),
+ 
+-	viewType       : 'table',
++	viewType       : 'card',
+ 
+ 	callSensors : rpc.declare({
+ 		object: 'luci.temp-status',
+@@ -170,6 +365,32 @@ return baseclass.extend({
+ 		return (a.number > b.number) ? 1 : (a.number < b.number) ? -1 : 0;
+ 	},
+ 
++	// "cpu0_thermal" -> "cpu0"; the full name stays in the tooltip
++	shortSensorName(sensor) {
++		let s = String(sensor).replace(/[_ -]?thermal$/i, '');
++		return (s.length > 0) ? s : String(sensor);
++	},
++
++	limitLabels: { max: 'max', critical: 'crit', emergency: 'emerg' },
++
++	// Thermometer icon built with the DOM API (E() would treat a markup string inside an array as plain text).
++	// The mercury color comes from --temp-color (see CSS).
++	makeThermoIcon() {
++		const ns = 'http://www.w3.org/2000/svg';
++		const mk = (tag, attrs) => {
++			const el = document.createElementNS(ns, tag);
++			for(const k in attrs) el.setAttribute(k, attrs[k]);
++			return el;
++		};
++		const svg = mk('svg', { 'class': 'temp-status-icon', 'viewBox': '0 0 14 28', 'aria-hidden': 'true' });
++		svg.append(
++			mk('path', { 'class': 'tube', 'd': 'M4.5 4.5a2.5 2.5 0 0 1 5 0v13.2a5 5 0 1 1-5 0z' }),
++			mk('circle', { 'class': 'mercury', 'cx': '7', 'cy': '22', 'r': '2.8' }),
++			mk('rect', { 'class': 'mercury', 'x': '6', 'y': '9', 'width': '2', 'height': '13', 'rx': '1' })
++		);
++		return svg;
++	},
++
+ 	restoreSettingsFromLocalStorage() {
+ 		let hiddenItems = localStorage.getItem(`luci-app-${this.viewName}-hiddenItems`);
+ 		if(hiddenItems) {
+@@ -391,9 +612,131 @@ return baseclass.extend({
+ 		return this.tempArea;
+ 	},
+ 
++	makeTempCardContent() {
++		this.tempCard.innerHTML = '';
++
++		for(let [k, v] of Object.entries(this.sensorsData)) {
++			v.sort(this.sortFunc);
++
++			for(let i of Object.values(v)) {
++				let sensor = i.title || i.item;
++
++				if(i.sources === undefined) {
++					continue;
++				};
++
++				i.sources.sort(this.sortFunc);
++
++				for(let j of i.sources) {
++					if(this.hiddenItems.has(j.path)) {
++						continue;
++					};
++
++					let temp = this.tempData[j.path];
++					let suffix = (j.label !== undefined) ? " / " + j.label :
++						(j.item !== undefined) ? " / " + j.item.replace(/_input$/, "") : "";
++					let name = sensor + suffix;
++					// on a card, a lone unlabeled "tempN" source adds nothing to the device name
++					let genericSuffix = (j.label === undefined && /^temp[0-9]+_input$/.test(j.item || '') &&
++						i.sources.length === 1);
++					let shortName = this.shortSensorName(sensor) + (genericSuffix ? '' : suffix);
++
++					if(temp !== undefined && temp !== null) {
++						temp = this.formatTemp(temp);
++					};
++
++					let tempHot       = NaN;
++					let tempOverheat  = NaN;
++					let overType      = null;
++					let tpoints       = j.tpoints;
++					let tpointsArray  = [];
++
++					if(tpoints) {
++						for(let i of Object.values(tpoints)) {
++							let t = this.formatTemp(i.temp);
++							if(t <= 0 || t > 200) {
++								continue;
++							};
++							tpointsArray.push(`${i.type}: ${t} °C`);
++
++							if(i.type == 'max' || i.type == 'critical' || i.type == 'emergency') {
++								if(!(tempOverheat <= t)) {
++									tempOverheat = t;
++									overType     = i.type;
++								};
++							}
++							else if(i.type == 'hot') {
++								tempHot = t;
++							};
++						};
++					};
++
++					if(isNaN(tempHot) && isNaN(tempOverheat)) {
++						tempHot      = this.tempHot;
++						tempOverheat = this.tempOverheat;
++					};
++
++					let hasTemp = (temp !== undefined && temp !== null);
++					let state   = (temp >= tempOverheat) ? ' temp-status-card-overheat' :
++						(temp >= tempHot) ? ' temp-status-card-hot' : '';
++					let ratio   = hasTemp ? Math.min(Math.max(temp / tempOverheat, 0), 1) * 100 : 0;
++					let limitType = overType || 'max';
++
++					// Tooltips: the name shows the full sensor name, the bottom row the trip points.
++					// (E() turns a null attribute value into the string "null": only add attributes that are set.)
++					let infoAttrs = { 'class': 'ifacebox-body temp-status-card-info' };
++					if(tpointsArray.length > 0) {
++						infoAttrs['data-tooltip']       = tpointsArray.join('\n');
++						infoAttrs['data-tooltip-style'] = 'temp-status';
++					};
++
++					this.tempCard.append(
++						E('div', {
++							'class': 'ifacebox temp-status-card' + state + (hasTemp ? '' : ' temp-status-card-nodata'),
++							'style': `--temp-ratio: ${ratio}%;`,
++						}, [
++							E('div', { 'class': 'ifacebox-head temp-status-card-head' }, [
++								E('span', {
++									'class'             : 'temp-status-card-name',
++									'data-tooltip'      : name,
++									'data-tooltip-style': 'temp-status',
++								}, document.createTextNode(shortName)),
++								E('span', {
++									'class': 'temp-status-hide-item',
++									'title': _('Hide'),
++									'click': () => this.hideItem(j.path),
++								}, '×'),
++							]),
++							E('div', { 'class': 'ifacebox-body temp-status-card-main' }, [
++								this.makeThermoIcon(),
++								E('span', { 'class': 'temp-status-card-value' },
++									hasTemp ? temp.toFixed(1) + ' °C' : '-'),
++							]),
++							E('div', { 'class': 'temp-status-gauge' }),
++							E('div', infoAttrs, [
++								E('span', { 'class': 'temp-status-info-label' }, this.limitLabels[limitType] || limitType),
++								E('span', { 'class': 'temp-status-info-value' }, `${tempOverheat} °C`),
++							]),
++						])
++					);
++				};
++			};
++		};
++
++		if(this.tempCard.childNodes.length == 0) {
++			this.tempCard.append(
++				E('em', {}, _('No temperature sensors available'))
++			);
++		};
++
++		return this.tempCard;
++	},
++
+ 	makeViewContent() {
+ 		this.tempView.innerHTML = '';
+-		this.tempView.append((this.viewType == 'list') ? this.makeTempAreaContent() : this.makeTempTableContent());
++		this.tempView.append(
++			(this.viewType == 'card') ? this.makeTempCardContent() :
++			(this.viewType == 'list') ? this.makeTempAreaContent() : this.makeTempTableContent());
+ 		this.hiddenNum.textContent = this.hiddenItems.size;
+ 		let unhide = document.getElementById('temp-status-unhide-all');
+ 		if(unhide) {
+@@ -415,7 +758,9 @@ return baseclass.extend({
+ 
+ 	switchView() {
+ 		this.tempView.innerHTML = '';
+-		this.viewType = (this.viewType == 'list') ? 'table' : 'list'
++		// table -> list -> card -> table
++		let views = [ 'table', 'list', 'card' ];
++		this.viewType = views[(views.indexOf(this.viewType) + 1) % views.length];
+ 		this.saveSettingsToLocalStorage();
+ 		this.makeViewContent();
+ 	},
+-- 
+2.43.0
