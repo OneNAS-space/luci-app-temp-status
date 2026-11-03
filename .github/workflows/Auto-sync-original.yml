@@ -1,0 +1,179 @@
+name: Auto sync and sanitize upstream repo
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: '36 */6 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'local-patches/**'
+
+# 同一时间只跑一个同步任务,避免两次运行互相覆盖
+concurrency:
+  group: auto-sync-original
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  # ---- 仓库专属配置 ----
+  UPSTREAM_REPO: https://github.com/gSpotx2f/luci-app-temp-status.git
+  UPSTREAM_BRANCH: master                            # 上游默认分支
+  PATCH_DIR: local-patches                           # 自定义补丁目录
+  # main 分支上由我们自己维护、同步时不被上游覆盖的路径(空格分隔)
+  PROTECTED_PATHS: ".github local-patches README.md SECURITY.md LICENSE screenshots"
+  # 打完补丁后强制写入 Makefile 的 PKG_RELEASE,保证高于已发布的 vX-rN(留空则不改)。
+  # 不用补丁做这件事:上游升级 PKG_VERSION 时,相邻行会让补丁上下文失配。
+  PKG_RELEASE_OVERRIDE: "4"
+
+jobs:
+  sync-and-sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TOKEN_LUCI_APP_TEMP_STATUS }}
+          fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "Jackie-Bot"
+          git config --global user.email "jackie@actions.local"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream "$UPSTREAM_REPO" || true
+          echo "🔄 Fetching upstream branch: $UPSTREAM_BRANCH ..."
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+      - name: Assemble Raw Materials & Generate Precision Changelog
+        run: |
+          if git ls-remote --exit-code --heads origin Official-original; then
+            git fetch origin Official-original
+            git checkout Official-original
+          else
+            echo "Creating a pristine orphan branch..."
+            git checkout --orphan Official-original
+          fi
+
+          NEW_HASH=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")
+
+          if [ -f .upstream_meta ]; then
+            OLD_HASH=$(sed -n '1p' .upstream_meta)
+          else
+            echo "⚠️ .upstream_meta not found! Fallback to a recent historical commit."
+            OLD_HASH=$(git log -n 1 --skip=5 --format="%H" "upstream/${UPSTREAM_BRANCH}" || true)
+            [ -z "$OLD_HASH" ] && OLD_HASH=$NEW_HASH
+          fi
+
+          CHANGELOG=$(git log --oneline "${OLD_HASH}..${NEW_HASH}" || true)
+          [ -z "$CHANGELOG" ] && CHANGELOG="No changes in this range."
+
+          {
+            echo "SYNC_COMMIT_MSG<<EOF_GHA"
+            echo "Sync: upstream updates (gSpotx2f/luci-app-temp-status)"
+            echo ""
+            echo "===== 📌 Upstream Commits ====="
+            echo "$CHANGELOG"
+            echo "EOF_GHA"
+          } >> "$GITHUB_ENV"
+
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          echo "📥 Checking out upstream tree..."
+          git checkout "upstream/${UPSTREAM_BRANCH}" -- .
+          echo "$NEW_HASH" > .upstream_meta
+
+      - name: Push completely assembled raw files to Official-original
+        run: |
+          git add -A
+          if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+            git commit -m "$SYNC_COMMIT_MSG"
+            git push "https://x-access-token:${{ secrets.TOKEN_LUCI_APP_TEMP_STATUS }}@github.com/${{ github.repository }}.git" Official-original
+          else
+            echo "Perfect. No updates detected in upstream."
+          fi
+
+      - name: Switch to main and prepare patching environment
+        run: |
+          git checkout main
+
+          echo "🧹 Cleaning up legacy generated files in main..."
+          KEEP=(.git .upstream_meta)
+          for p in $PROTECTED_PATHS; do KEEP+=("$p"); done
+          for f in .[!.]* ..?* *; do
+            [ -e "$f" ] || continue
+            skip=false
+            for k in "${KEEP[@]}"; do [ "$f" = "$k" ] && skip=true; done
+            $skip || rm -rf "$f"
+          done
+
+          echo "📥 Overlaying pristine raw materials from Official-original..."
+          git checkout Official-original -- .
+
+          for p in $PROTECTED_PATHS; do
+            git rm -rf -q --cached -- "$p" 2>/dev/null || true
+            rm -rf "$p"
+            if git cat-file -e "HEAD:$p" 2>/dev/null; then
+              git checkout HEAD -- "$p"
+            fi
+          done
+
+      - name: Apply Custom Patches Pipeline
+        run: |
+          set -e
+          shopt -s nullglob
+          PATCHES=("$PATCH_DIR"/*.patch)
+
+          if [ ${#PATCHES[@]} -eq 0 ]; then
+            echo "ℹ️ No patches found in $PATCH_DIR/, skipping."
+            exit 0
+          fi
+
+          for patch_file in $(printf '%s\n' "${PATCHES[@]}" | sort); do
+            echo ""
+            echo "🔎 Detecting the patch status: $patch_file ..."
+
+            if patch -p1 --dry-run -R --silent < "$patch_file" >/dev/null 2>&1; then
+              echo "⏭️ [Skip] Upstream already contains this patch."
+            elif patch -p1 --dry-run --silent < "$patch_file" >/dev/null 2>&1; then
+              echo "🩹 Applying $patch_file ..."
+              patch --batch -p1 < "$patch_file"
+              echo "✅ $patch_file applied successfully!"
+            else
+              echo "❌ Critical Error: $patch_file is neither already applied nor cleanly appliable."
+              echo "---- dry-run diagnostics ----"
+              patch -p1 --dry-run < "$patch_file" || true
+              exit 1
+            fi
+          done
+
+      - name: Override PKG_RELEASE
+        run: |
+          if [ -z "$PKG_RELEASE_OVERRIDE" ]; then
+            echo "ℹ️ PKG_RELEASE_OVERRIDE is empty, keeping upstream value."
+            exit 0
+          fi
+          if ! grep -q '^PKG_RELEASE:=' Makefile; then
+            echo "❌ PKG_RELEASE line not found in Makefile."
+            exit 1
+          fi
+          sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${PKG_RELEASE_OVERRIDE}/" Makefile
+          grep -E '^PKG_(VERSION|RELEASE):=' Makefile
+
+      - name: Commit and push to main
+        run: |
+          git add -A
+
+          if git diff-index --quiet HEAD --; then
+            echo "No modification changes detected on main branch."
+            exit 0
+          fi
+
+          git commit -m "[Patched] $SYNC_COMMIT_MSG"
+          git push "https://x-access-token:${{ secrets.TOKEN_LUCI_APP_TEMP_STATUS }}@github.com/${{ github.repository }}.git" main
