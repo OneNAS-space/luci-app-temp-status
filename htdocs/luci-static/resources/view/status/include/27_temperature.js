@@ -129,13 +129,19 @@ document.head.append(E('style', {'type': 'text/css'},
 	font-size: .8125rem;
 	line-height: 1.25;
 }
-/* one line only, so the values of cards in the same row stay aligned; full name is in the tooltip */
+/* one line only, so the values of cards in the same row stay aligned; full name is in the tooltip.
+   The ellipsis lives on an inner element that ignores the pointer: Safari shows a native tooltip
+   for any hovered element that is cut off with an ellipsis, on top of LuCI's own tooltip. */
 .temp-status-card .temp-status-card-name {
 	display: block;
 	font-weight: bold;
+}
+.temp-status-card .temp-status-card-name-text {
+	display: block;
 	overflow: hidden;
 	white-space: nowrap;
 	text-overflow: ellipsis;
+	pointer-events: none;
 }
 /* same pointer as LuCI's own tooltip targets */
 .temp-status-card [data-tooltip] {
@@ -700,7 +706,7 @@ return baseclass.extend({
 									'class'             : 'temp-status-card-name',
 									'data-tooltip'      : name,
 									'data-tooltip-style': 'temp-status',
-								}, document.createTextNode(shortName)),
+								}, E('span', { 'class': 'temp-status-card-name-text' }, document.createTextNode(shortName))),
 								E('span', {
 									'class': 'temp-status-hide-item',
 									'title': _('Hide'),
