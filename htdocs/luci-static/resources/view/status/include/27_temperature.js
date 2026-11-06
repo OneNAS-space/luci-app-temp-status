@@ -82,8 +82,7 @@ document.head.append(E('style', {'type': 'text/css'},
 	word-wrap: break-word;
 	margin: 0px 4px 4px 0 !important;
 	padding: 4px;
-	border: 1px solid;
-	border-color: transparent;
+	border: 1px solid transparent;
 	border-color: var(--app-temp-status-border-color);
 	-webkit-border-radius: 4px;
 	-moz-border-radius: 4px;
@@ -107,15 +106,15 @@ document.head.append(E('style', {'type': 'text/css'},
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: space-evenly;
-	gap: var(--field-gap, .75rem) .5rem;
-	padding: .25rem var(--section-inset, 0) var(--field-gap, .5rem);
+	gap: var(--field-gap, .75rem);
+	padding: .25rem var(--section-inset, .25em) var(--field-gap, .5rem);
 }
 
 .temp-status-card.ifacebox {
 	display: flex;
-	flex: 0 0 6.5rem;
+	flex: 0 0 5.625rem;
 	flex-direction: column;
-	width: 6.5rem;
+	width: 5.625rem;
 	min-width: 0;
 	max-width: 100%;
 	margin: 0;
@@ -125,8 +124,8 @@ document.head.append(E('style', {'type': 'text/css'},
 
 .temp-status-card .temp-status-card-head {
 	position: relative;
-	padding: .25em 1.3em .25em 1em;
-	font-size: .8125rem;
+	padding: .2em 1.15em .2em .5em;
+	font-size: .75rem;
 	line-height: 1.25;
 }
 /* one line only, so the values of cards in the same row stay aligned; full name is in the tooltip.
@@ -173,12 +172,12 @@ document.head.append(E('style', {'type': 'text/css'},
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	gap: .375rem;
-	padding: .75rem .5rem;
+	gap: .25rem;
+	padding: .4rem .375rem;
 	line-height: 1;
 }
 .temp-status-card-value {
-	font-size: 13px;
+	font-size: 11px;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 }
@@ -186,8 +185,8 @@ document.head.append(E('style', {'type': 'text/css'},
 /* thermometer icon, plays the role of the port icon in the Port status cards */
 .temp-status-icon {
 	display: block;
-	width: 14px;
-	height: 28px;
+	width: 12px;
+	height: 24px;
 }
 .temp-status-icon .tube {
 	fill: none;
@@ -224,19 +223,18 @@ document.head.append(E('style', {'type': 'text/css'},
 	align-items: center;
 	justify-content: space-between;
 	gap: .25rem;
-	padding: .5rem;
-	font-size: .75rem;
-	line-height: 1.5;
+	padding: .3rem;
+	font-size: 80%;
+	line-height: 1.3;
 	white-space: nowrap;
 }
 .temp-status-info-label {
-	font-size: .6875rem;
+	font-size: 80%;
 	text-transform: uppercase;
 	opacity: .7;
 }
 .temp-status-info-value {
 	margin-inline-start: auto;
-	font-weight: 500;
 	font-variant-numeric: tabular-nums;
 }
 
@@ -263,8 +261,7 @@ document.head.append(E('style', {'type': 'text/css'},
 	cursor: pointer;
 	margin: 2px 4px 2px 0 !important;
 	padding: 3px 10px;
-	border: 1px solid;
-	border-color: transparent;
+	border: 1px solid transparent;
 	-webkit-border-radius: 4px;
 	-moz-border-radius: 4px;
 	border-radius: 4px;
@@ -317,6 +314,22 @@ if(!window.tempStatusTooltipPatched) {
 		let name = card && card.querySelector('.temp-status-card-name');
 		if(name && name !== target) {
 			ev.target.style.left = (name.getBoundingClientRect().left + window.pageXOffset) + 'px';
+			/* the tooltip lives in <body>: give it the size of the row it describes (as the Port cards' stats
+			   tooltip, which sits inside the 80% text) and a normal weight */
+			ev.target.style.fontSize = window.getComputedStyle(target).fontSize;
+			ev.target.style.fontWeight = 'normal';
+			/* "max: 85 °C" -> bold label, plain value, as in the Port cards' stats tooltip */
+			let lines = ev.target.textContent.split('\n');
+			ev.target.textContent = '';
+			lines.forEach((line, n) => {
+				let p = line.indexOf(': ');
+				if(n > 0) ev.target.append(document.createElement('br'));
+				if(p > 0) {
+					ev.target.append(E('strong', {}, line.slice(0, p + 1) + ' '), line.slice(p + 2));
+				} else {
+					ev.target.append(line);
+				}
+			});
 		}
 	});
 }
